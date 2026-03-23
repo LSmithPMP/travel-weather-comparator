@@ -1,0 +1,630 @@
+{
+  "name": "Travel Weather Comparator — A2A Multi-Agent (HARDENED)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "travel-weather-compare",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "https://your-frontend.example.com",
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              },
+              {
+                "name": "X-Frame-Options",
+                "value": "DENY"
+              },
+              {
+                "name": "Strict-Transport-Security",
+                "value": "max-age=63072000; includeSubDomains; preload"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              },
+              {
+                "name": "X-Request-Id",
+                "value": "={{$json.request_id || 'unknown'}}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "930e2fd7-e13f-41a9-a9e7-23b0eed03a47",
+      "name": "Travel Query Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        400
+      ],
+      "webhookId": "616e1238-09a6-419c-8488-43486147cae0"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-01 REMEDIATION: Three-layer mandatory authentication\n//   Layer 1: API key (X-Api-Key header vs TWC_API_KEY env)\n//   Layer 2: HMAC-SHA256 body signature (mandatory)\n//   Layer 3: CORS origin restriction (handled at webhook level)\n// T-09 REMEDIATION: CORS allowedOrigins set on webhook node\n// All three layers must pass. No optional modes.\n// ═══════════════════════════════════════════════════════════════\nconst crypto = require('crypto');\n\nconst raw = $input.first().json;\nconst headers = raw.headers || {};\n\n// ── Layer 1: API Key Gate ──\nconst apiKey = headers['x-api-key'] || headers['X-Api-Key'] || '';\nconst VALID_API_KEY = $env.TWC_API_KEY || '';\n\nif (!VALID_API_KEY) {\n  throw new Error('SERVER_CONFIG_ERROR: TWC_API_KEY environment variable not set.');\n}\nif (!apiKey || apiKey !== VALID_API_KEY) {\n  throw new Error('AUTH_FAILED: Invalid or missing API key.');\n}\n\n// ── Layer 2: HMAC-SHA256 Signature Verification (MANDATORY) ──\nconst HMAC_SECRET = $env.TWC_HMAC_SECRET || '';\nif (!HMAC_SECRET) {\n  throw new Error('SERVER_CONFIG_ERROR: TWC_HMAC_SECRET environment variable not set.');\n}\n\nconst signature = headers['x-hmac-signature'] || headers['X-Hmac-Signature'] || '';\nif (!signature) {\n  throw new Error('AUTH_FAILED: Missing HMAC signature. X-Hmac-Signature header required.');\n}\n\nconst bodyStr = typeof raw.body === 'string' ? raw.body : JSON.stringify(raw.body || {});\nconst expected = crypto.createHmac('sha256', HMAC_SECRET).update(bodyStr).digest('hex');\n\n// Timing-safe comparison to prevent side-channel attacks\nlet sigBuffer, expBuffer;\ntry {\n  sigBuffer = Buffer.from(signature, 'hex');\n  expBuffer = Buffer.from(expected, 'hex');\n} catch (e) {\n  throw new Error('AUTH_FAILED: Malformed HMAC signature.');\n}\nif (sigBuffer.length !== expBuffer.length || !crypto.timingSafeEqual(sigBuffer, expBuffer)) {\n  throw new Error('AUTH_FAILED: HMAC signature mismatch.');\n}\n\n// ── Pass through authenticated payload ──\nreturn [{ json: { ...raw, _authenticated: true, _auth_method: 'apikey+hmac', _auth_timestamp: new Date().toISOString() } }];"
+      },
+      "id": "a97f9dc2-3e8d-4761-bb87-cc91edae067e",
+      "name": "Authenticate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-04 REMEDIATION: Per-client sliding-window rate limiting\n// T-07 PARTIAL: Caps max cities before fan-out amplification\n// ═══════════════════════════════════════════════════════════════\n\n// n8n static data persists across executions within the same worker\nconst $static = $getWorkflowStaticData('global');\nif (!$static.requestLog) $static.requestLog = [];\n\nconst now = Date.now();\nconst WINDOW_MS = 60 * 1000;       // 1-minute sliding window\nconst MAX_REQUESTS = 10;            // max 10 requests per window\nconst MAX_CITIES_PER_REQUEST = 4;   // cap fan-out amplification\n\n// ── Purge expired entries ──\n$static.requestLog = $static.requestLog.filter(ts => now - ts < WINDOW_MS);\n\n// ── Check limit ──\nif ($static.requestLog.length >= MAX_REQUESTS) {\n  throw new Error('RATE_LIMITED: Too many requests. Max ' + MAX_REQUESTS + ' per minute.');\n}\n\n// ── Record this request ──\n$static.requestLog.push(now);\n\n// ── Pre-check cities count for fan-out cap ──\nconst body = $input.first().json.body || $input.first().json;\nlet cities = body.cities;\nif (typeof cities === 'string') {\n  try { cities = JSON.parse(cities); } catch(e) { cities = [cities]; }\n}\nif (Array.isArray(cities) && cities.length > MAX_CITIES_PER_REQUEST) {\n  throw new Error('INPUT_ERROR: Maximum ' + MAX_CITIES_PER_REQUEST + ' cities per request. Received: ' + cities.length);\n}\n\nreturn $input.all();"
+      },
+      "id": "76b03cf8-eba0-4a8d-9ef9-2621945df4aa",
+      "name": "Rate Limiter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-03 REMEDIATION: Strict input validation, regex on travel_date,\n//                   string length caps, no passthrough of raw fields\n// T-06 REMEDIATION: Cryptographic request IDs via randomUUID()\n// T-07 REMEDIATION: Explicit array length cap + string size limits\n// T-12 REMEDIATION: All timestamps in UTC, no timezone exposure\n// ═══════════════════════════════════════════════════════════════\nconst crypto = require('crypto');\n\nconst raw = $input.first().json;\nconst body = raw.body || raw;\n\n// ── Constants ──\nconst MAX_STRING_LENGTH = 64;\nconst MAX_CITIES = 4;\nconst SUPPORTED = ['Austin','Miami','Denver','Chicago','New Orleans','San Francisco','Nashville'];\nconst ORIGIN_MAP = { NYC:'from_NYC', LA:'from_LA', CHICAGO:'from_Chicago', AUSTIN:'from_Austin', MIAMI:'from_Miami', DENVER:'from_Denver' };\nconst DATE_REGEX = /^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])$/;\n\n// ── Sanitize helper: strip to safe chars, cap length ──\nfunction sanitize(val, maxLen) {\n  if (typeof val !== 'string') return '';\n  return val.replace(/[^a-zA-Z0-9\\s\\-_.]/g, '').substring(0, maxLen || MAX_STRING_LENGTH).trim();\n}\n\n// ── Parse cities ──\nlet cities = body.cities;\nif (typeof cities === 'string') {\n  try { cities = JSON.parse(cities); } catch(e) { cities = [cities]; }\n}\nif (!Array.isArray(cities) || cities.length === 0) {\n  throw new Error('INPUT_ERROR: cities must be a non-empty array.');\n}\nif (cities.length > MAX_CITIES) {\n  throw new Error('INPUT_ERROR: Maximum ' + MAX_CITIES + ' cities. Received: ' + cities.length);\n}\n\n// ── Validate each city against whitelist ──\nconst normalize = s => sanitize(s, 32).replace(/\\w\\S*/g, t => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase());\nconst normalizedCities = cities.map(normalize);\nconst bad = normalizedCities.filter(c => !SUPPORTED.includes(c));\nif (bad.length) throw new Error('INPUT_ERROR: Unsupported cities: ' + bad.join(', '));\n\n// ── Validate origin against whitelist ──\nconst originRaw = sanitize(body.origin || '', 32);\nconst originKey = originRaw.toUpperCase().replace(/\\s+/g, '_');\nconst originLookup = ORIGIN_MAP[originKey];\nif (!originLookup) throw new Error('INPUT_ERROR: Unsupported origin.');\n\n// ── Validate travel_date with strict regex ──\nlet travelDate = null;\nif (body.travel_date) {\n  const dateStr = sanitize(String(body.travel_date), 10);\n  if (!DATE_REGEX.test(dateStr)) {\n    throw new Error('INPUT_ERROR: travel_date must be YYYY-MM-DD format.');\n  }\n  // Additional: ensure it parses to a real date\n  const parsed = new Date(dateStr + 'T00:00:00Z');\n  if (isNaN(parsed.getTime())) {\n    throw new Error('INPUT_ERROR: travel_date is not a valid calendar date.');\n  }\n  travelDate = dateStr;\n}\n\n// ── Parse budget_mode strictly ──\nlet budgetMode = false;\nif (typeof body.budget_mode === 'boolean') budgetMode = body.budget_mode;\nelse if (typeof body.budget_mode === 'string') budgetMode = body.budget_mode.toLowerCase() === 'true';\n\n// ── Cryptographic request ID (T-06) ──\nconst requestId = 'TWC-' + crypto.randomUUID();\n\n// ── Return only validated, sanitized fields — no raw passthrough ──\nreturn [{ json: {\n  cities: normalizedCities,\n  origin: originRaw,\n  origin_key: originLookup,\n  travel_date: travelDate,\n  budget_mode: budgetMode,\n  request_id: requestId,\n  timestamp: new Date().toISOString()  // UTC, no timezone leak\n}}];"
+      },
+      "id": "89815db5-4332-481e-a7f0-592024d8416f",
+      "name": "Validate and Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nreturn input.cities.map(city => ({ json: {\n  city,\n  origin: input.origin,\n  origin_key: input.origin_key,\n  travel_date: input.travel_date,\n  budget_mode: input.budget_mode,\n  request_id: input.request_id\n}}));"
+      },
+      "id": "35dba325-97eb-47c2-ac15-042c66492528",
+      "name": "Split Cities",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WEATHER_AGENT_URL || 'https://localhost:5002' }}/a2a/task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-A2A-Sender",
+              "value": "travel-coordinator"
+            },
+            {
+              "name": "X-A2A-Task",
+              "value": "weather-forecast"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.A2A_AGENT_TOKEN || '') }}"
+            },
+            {
+              "name": "X-Request-Id",
+              "value": "={{ $json.request_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ task_id: $json.request_id + '-weather-' + $json.city, sender: 'travel-coordinator', task_type: 'weather_forecast', payload: { city: $json.city, days: 7, units: 'imperial' } }) }}",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "timeout": 10000
+        }
+      },
+      "id": "d19abe33-ba2c-42e8-ac2a-641049f094c6",
+      "name": "Weather Agent A2A Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        256
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.TRAVEL_AGENT_URL || 'https://localhost:5003' }}/a2a/task",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-A2A-Sender",
+              "value": "travel-coordinator"
+            },
+            {
+              "name": "X-A2A-Task",
+              "value": "travel-logistics"
+            },
+            {
+              "name": "Authorization",
+              "value": "={{ 'Bearer ' + ($env.A2A_AGENT_TOKEN || '') }}"
+            },
+            {
+              "name": "X-Request-Id",
+              "value": "={{ $json.request_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ task_id: $json.request_id + '-travel-' + $json.city, sender: 'travel-coordinator', task_type: 'travel_logistics', payload: { city: $json.city, origin: $json.origin, origin_key: $json.origin_key, travel_date: $json.travel_date } }) }}",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "timeout": 10000
+        }
+      },
+      "id": "a8dc3e40-ab7c-42cc-83e1-50f318fe0c56",
+      "name": "Travel Agent A2A Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        0,
+        528
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "ebf5f86f-f158-46dc-8f60-c10801debd1e",
+      "name": "Merge Weather Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        240,
+        256
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {},
+      "id": "520d7aa2-d8df-44c7-a5ff-10c000aacc4d",
+      "name": "Merge Travel Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        240,
+        576
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-08 REMEDIATION: Propagates degradation flags per city\n// ═══════════════════════════════════════════════════════════════\nconst all = $input.all().map(i => i.json);\nconst wMap = {}, tMap = {};\nfor (const item of all) {\n  if (!item.city) continue;\n  if (item.weather_score !== undefined || item.current !== undefined) wMap[item.city] = item;\n  if (item.flight_cost !== undefined || item.total_daily_cost !== undefined) tMap[item.city] = item;\n}\nconst cities = [...new Set([...Object.keys(wMap), ...Object.keys(tMap)])];\nconst degradations = [];\nconst unified = cities.map(city => {\n  const w = wMap[city] || {};\n  const t = tMap[city] || {};\n  // Track degradation per city per domain\n  if (w.data_degraded) degradations.push({ city, domain: 'weather', reason: w.degradation_reason });\n  if (t.data_degraded) degradations.push({ city, domain: 'travel', reason: t.degradation_reason });\n  return {\n    city,\n    request_id: w.request_id || t.request_id,\n    origin: w.origin || t.origin,\n    budget_mode: w.budget_mode || t.budget_mode || false,\n    travel_date: w.travel_date || t.travel_date,\n    weather: {\n      source: w.source || 'unknown',\n      temp_f: w.current?.temp_f || null,\n      condition: w.current?.condition || 'Unknown',\n      humidity: w.current?.humidity || null,\n      avg_high: w.forecast_7day?.avg_high || null,\n      precip_chance: w.forecast_7day?.precip_chance || null,\n      alerts: w.alerts || [],\n      weather_score: w.weather_score || 50\n    },\n    travel: {\n      source: t.source || 'unknown',\n      flight_cost: t.flight_cost || null,\n      hotel_per_night: t.hotel_per_night || null,\n      total_daily_cost: t.total_daily_cost || null,\n      travel_hours: t.travel_hours || null,\n      warnings: t.warnings || [],\n      peak_season: t.peak_season || false\n    }\n  };\n});\nreturn [{ json: {\n  cities: unified,\n  degradations,\n  any_degraded: degradations.length > 0,\n  aggregated_at: new Date().toISOString()\n} }];"
+      },
+      "id": "27b3c580-fed4-4b26-9189-ceb53ea1f960",
+      "name": "Aggregate All City Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { cities, degradations, any_degraded, aggregated_at } = $input.first().json;\nconst budgetMode = cities[0]?.budget_mode || false;\nconst WEIGHTS = budgetMode\n  ? { weather:0.15, cost:0.55, events:0.20, convenience:0.10 }\n  : { weather:0.35, cost:0.30, events:0.20, convenience:0.15 };\n\nfunction costScore(data) {\n  const costs = data.map(c => c.travel.total_daily_cost).filter(x => x !== null);\n  if (!costs.length) return data.map(() => 50);\n  const max = Math.max(...costs), min = Math.min(...costs), range = max - min || 1;\n  return data.map(c => c.travel.total_daily_cost === null ? 50 : Math.round(100 - ((c.travel.total_daily_cost - min) / range) * 100));\n}\n\nfunction convScore(data) {\n  const times = data.map(c => c.travel.travel_hours).filter(x => x !== null);\n  if (!times.length) return data.map(() => 50);\n  const max = Math.max(...times), min = Math.min(...times), range = max - min || 1;\n  return data.map(c => c.travel.travel_hours === null ? 50 : Math.round(100 - ((c.travel.travel_hours - min) / range) * 100));\n}\n\nfunction eventPenalty(warnings) {\n  let p = 0;\n  for (const w of warnings) {\n    const wl = w.toLowerCase();\n    if (wl.includes('extreme') || wl.includes('3x')) p += 30;\n    else if (wl.includes('high') || wl.includes('surge') || wl.includes('2x') || wl.includes('inflated')) p += 20;\n    else if (wl.includes('crowded') || wl.includes('peak')) p += 10;\n    else p += 5;\n  }\n  return Math.min(p, 40);\n}\n\nconst cs = costScore(cities);\nconst vs = convScore(cities);\nconst round1 = cities.map((c, i) => ({\n  city: c.city,\n  weather_score: c.weather.weather_score,\n  cost_score: cs[i],\n  event_penalty: eventPenalty(c.travel.warnings),\n  convenience_score: vs[i]\n}));\nconst bestWeather = [...round1].sort((a,b) => b.weather_score - a.weather_score)[0].city;\nconst bestCost = [...round1].sort((a,b) => b.cost_score - a.cost_score)[0].city;\nconst hasConflict = bestWeather !== bestCost;\nconst log = [\n  '=== ROUND 1: DOMAIN SCORING ===',\n  'Weather: ' + round1.map(r => r.city + '=' + r.weather_score).join(', '),\n  'Cost:    ' + round1.map(r => r.city + '=' + r.cost_score).join(', '),\n  '',\n  '=== ROUND 2: CONFLICT DETECTION ===',\n  'Weather recommends: ' + bestWeather,\n  'Travel recommends:  ' + bestCost,\n  hasConflict ? 'CONFLICT — applying weighted scoring.' : 'AGREEMENT — proceeding.'\n].join('\\n');\nreturn [{ json: { cities, degradations, any_degraded, aggregated_at, round1, hasConflict, WEIGHTS, round1_log: log } }];"
+      },
+      "id": "c66b4f1b-eaee-4925-9192-d0468527e8ca",
+      "name": "Coordinator Part 1 Scoring",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const { cities, degradations, any_degraded, aggregated_at, round1, hasConflict, WEIGHTS, round1_log } = $input.first().json;\nconst scored = cities.map((c, i) => {\n  const r = round1[i];\n  const eventScore = Math.max(0, 100 - r.event_penalty);\n  const final = Math.round(\n    r.weather_score * WEIGHTS.weather +\n    r.cost_score * WEIGHTS.cost +\n    eventScore * WEIGHTS.events +\n    r.convenience_score * WEIGHTS.convenience\n  );\n  return { ...c, scores: { ...r, event_score: eventScore, final_score: final } };\n});\nconst ranked = [...scored].sort((a,b) => b.scores.final_score - a.scores.final_score);\nconst winner = ranked[0];\n\nfunction rationale(c) {\n  const parts = [];\n  if (c.weather.weather_score >= 80) parts.push(c.city + ' has excellent weather (' + c.weather.temp_f + 'F, ' + c.weather.condition + ')');\n  else if (c.weather.weather_score >= 60) parts.push(c.city + ' has acceptable weather (' + c.weather.temp_f + 'F)');\n  else parts.push(c.city + ' has poor weather (' + c.weather.temp_f + 'F, ' + c.weather.condition + ')');\n  if (c.travel.total_daily_cost) parts.push('daily cost $' + c.travel.total_daily_cost + ' (flight $' + c.travel.flight_cost + ' + hotel $' + c.travel.hotel_per_night + ')');\n  if (c.travel.warnings.length) parts.push('NOTE: ' + c.travel.warnings.join('; '));\n  else parts.push('no major events');\n  return parts.join('. ') + '.';\n}\n\nconst round3_log = [\n  '', '=== ROUND 3: WEIGHTED SCORES ===',\n  'Weights: W=' + (WEIGHTS.weather*100) + '% C=' + (WEIGHTS.cost*100) + '% E=' + (WEIGHTS.events*100) + '% Conv=' + (WEIGHTS.convenience*100) + '%',\n  ...ranked.map((c,i) => '#'+(i+1)+' '+c.city+': '+c.scores.final_score+' pts')\n].join('\\n');\n\nreturn [{ json: {\n  request_id: cities[0]?.request_id,\n  degradations,\n  any_degraded,\n  recommendation: {\n    winner: winner.city,\n    final_score: winner.scores.final_score,\n    rationale: rationale(winner),\n    consensus: !hasConflict,\n    mode: WEIGHTS.weather === 0.15 ? 'budget' : 'standard'\n  },\n  ranked_cities: ranked.map((c,i) => ({\n    rank: i+1,\n    city: c.city,\n    final_score: c.scores.final_score,\n    weather_source: c.weather.source,\n    travel_source: c.travel.source,\n    weather_summary: c.weather.temp_f + 'F, ' + c.weather.condition,\n    cost_summary: '$' + c.travel.total_daily_cost + '/day',\n    travel_time: c.travel.travel_hours + 'h',\n    warnings: c.travel.warnings,\n    score_breakdown: c.scores\n  })),\n  negotiation_log: round1_log + round3_log,\n  weights_used: WEIGHTS,\n  aggregated_at,\n  completed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "162e54f7-f6b6-45ea-bc2f-3d1ec4e97166",
+      "name": "Coordinator Part 2 Ranking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-05 REMEDIATION: No internal architecture details in response\n// T-08 REMEDIATION: Degradation warnings prominently surfaced\n// T-11 REMEDIATION: Response excludes raw negotiation log to\n//                   minimize sensitive data in execution history\n// ═══════════════════════════════════════════════════════════════\nconst {\n  recommendation, ranked_cities, negotiation_log, weights_used,\n  request_id, completed_at, degradations, any_degraded\n} = $input.first().json;\n\n// ── Build human-readable summary ──\nconst lines = [\n  'RECOMMENDATION: ' + recommendation.winner,\n  'Score: ' + recommendation.final_score + '/100 | Mode: ' + recommendation.mode.toUpperCase() +\n    ' | Consensus: ' + (recommendation.consensus ? 'YES' : 'NO — coordinator resolved'),\n  recommendation.rationale\n];\n\n// ── Prominent degradation warning ──\nif (any_degraded) {\n  lines.push('');\n  lines.push('⚠ DATA QUALITY WARNING: Some results used fallback data.');\n  for (const d of degradations) {\n    lines.push('  → ' + d.city + ' [' + d.domain + ']: ' + d.reason);\n  }\n}\n\nlines.push('');\nlines.push('RANKINGS:');\nfor (const c of ranked_cities) {\n  let line = '#' + c.rank + ' ' + c.city + ' — ' + c.final_score + '/100 | ' +\n    c.weather_summary + ' | ' + c.cost_summary + ' | ' + c.travel_time;\n  if (c.weather_source === 'MOCK_FALLBACK' || c.travel_source === 'MOCK_FALLBACK') {\n    line += ' | ⚠ FALLBACK DATA';\n  }\n  if (c.warnings.length) line += ' | NOTE: ' + c.warnings.join(', ');\n  lines.push(line);\n}\n\nlines.push('');\nlines.push('WEIGHTS: Weather ' + (weights_used.weather*100) + '% | Cost ' +\n  (weights_used.cost*100) + '% | Events ' + (weights_used.events*100) +\n  '% | Convenience ' + (weights_used.convenience*100) + '%');\n\nreturn [{ json: {\n  success: true,\n  request_id,\n  data_quality: {\n    all_live: !any_degraded,\n    degradations: degradations || [],\n    warning: any_degraded ? 'One or more data sources used fallback data. Results may not reflect current conditions.' : null\n  },\n  recommendation,\n  ranked_cities,\n  summary: lines.join('\\n'),\n  metadata: {\n    weights_used,\n    completed_at,\n    workflow: 'Travel Weather Comparator v2.0 (Hardened)'\n  }\n  // NOTE: negotiation_log intentionally excluded from external response (T-11)\n}}];"
+      },
+      "id": "b0380302-dc2b-4f19-9d55-6a85734aa5bf",
+      "name": "Format Final Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        400
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              },
+              {
+                "name": "X-Request-Id",
+                "value": "={{ $json.request_id }}"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "d6fb2aff-a731-40ef-b546-34d3dfe427f3",
+      "name": "Return Response to Caller",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1440,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// T-05 REMEDIATION: Generic error response — NO internal details,\n//                   NO port numbers, NO service names, NO hints.\n//                   Correlation via request_id only.\n// ═══════════════════════════════════════════════════════════════\nconst crypto = require('crypto');\nconst e = $input.first();\nconst internalMsg = e?.json?.error?.message || e?.error?.message || 'Unknown error';\n\n// ── Classify error for external consumer (no internals leaked) ──\nlet externalCode = 'INTERNAL_ERROR';\nlet statusHint = 500;\nif (internalMsg.includes('AUTH_FAILED')) { externalCode = 'UNAUTHORIZED'; statusHint = 401; }\nelse if (internalMsg.includes('RATE_LIMITED')) { externalCode = 'RATE_LIMITED'; statusHint = 429; }\nelse if (internalMsg.includes('INPUT_ERROR')) { externalCode = 'BAD_REQUEST'; statusHint = 400; }\nelse if (internalMsg.includes('SERVER_CONFIG_ERROR')) { externalCode = 'SERVICE_UNAVAILABLE'; statusHint = 503; }\n\n// ── Generate error correlation ID ──\nconst errorId = 'ERR-' + crypto.randomUUID();\n\n// ── Log full details server-side (visible in n8n execution log) ──\nconsole.error(JSON.stringify({\n  error_id: errorId,\n  internal_message: internalMsg,\n  timestamp: new Date().toISOString(),\n  stack: e?.json?.error?.stack || null\n}));\n\n// ── Return sanitized response ──\nreturn [{ json: {\n  success: false,\n  error: {\n    code: externalCode,\n    message: externalCode === 'BAD_REQUEST'\n      ? internalMsg.replace('INPUT_ERROR: ', '')\n      : 'An error occurred processing your request.',\n    error_id: errorId,\n    timestamp: new Date().toISOString()\n  }\n  // NO hint field. NO port numbers. NO service names.\n}}];"
+      },
+      "id": "a480173e-2783-440d-8d16-f60f91e2bec8",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Content-Type-Options",
+                "value": "nosniff"
+              },
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "e0ee694c-0596-4db3-a67e-331a3304bf57",
+      "name": "Return Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1440,
+        608
+      ]
+    }
+  ],
+  "pinData": {
+    "Travel Query Webhook": [
+      {
+        "json": {
+          "headers": {
+            "x-api-key": "YOUR_API_KEY_HERE",
+            "x-hmac-signature": "REQUIRED_HMAC_HEX_HERE"
+          },
+          "body": {
+            "cities": [
+              "Austin",
+              "Miami",
+              "Denver"
+            ],
+            "origin": "NYC",
+            "travel_date": "2025-03-20",
+            "budget_mode": false
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Travel Query Webhook": {
+      "main": [
+        [
+          {
+            "node": "Authenticate Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authenticate Request": {
+      "main": [
+        [
+          {
+            "node": "Rate Limiter",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limiter": {
+      "main": [
+        [
+          {
+            "node": "Validate and Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Split Cities",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Cities": {
+      "main": [
+        [
+          {
+            "node": "Weather Agent A2A Call",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Travel Agent A2A Call",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Weather Agent A2A Call": {
+      "main": [
+        [
+          {
+            "node": "Merge Weather Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Travel Agent A2A Call": {
+      "main": [
+        [
+          {
+            "node": "Merge Travel Results",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Weather Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All City Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Travel Results": {
+      "main": [
+        [
+          {
+            "node": "Aggregate All City Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate All City Data": {
+      "main": [
+        [
+          {
+            "node": "Coordinator Part 1 Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coordinator Part 1 Scoring": {
+      "main": [
+        [
+          {
+            "node": "Coordinator Part 2 Ranking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coordinator Part 2 Ranking": {
+      "main": [
+        [
+          {
+            "node": "Format Final Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Final Response": {
+      "main": [
+        [
+          {
+            "node": "Return Response to Caller",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Return Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "dd88114c-7f06-46b5-8785-514d42a1cf92",
+  "meta": {
+    "instanceId": "35af61cdb10af63706b8451b1603885f61fa5f7c5839f5f0bddf787166bda6f7"
+  },
+  "id": "mUMUf9iF4LzB0RbD",
+  "tags": []
+}

@@ -1,0 +1,21 @@
+# Environment variables — NEVER commit secrets
+.env
+.env.*
+*.env
+
+# n8n local data
+.n8n/
+n8n-data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+logs/

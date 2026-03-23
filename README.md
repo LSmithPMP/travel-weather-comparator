@@ -1,163 +1,249 @@
-<div align="center">
+# Travel Weather Comparator — A2A Multi-Agent System (HARDENED)
 
-<!-- Dynamic typing header -->
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&duration=3000&pause=1000&color=2F81F7&center=true&vCenter=true&width=700&lines=Lamonte+Smith+%7C+Senior+SDRE+%40+General+Motors;DBA+%26+PhD+Candidate+%7C+Walsh+College+4.0+GPA;AV+Security+%7C+OT+%7C+Wireless+Infrastructure;Building+at+the+Intersection+of+AI+%26+Autonomy)](https://git.io/typing-svg)
+> **Applied Agentic AI Program · Interview Kickstart · Spring 2026**  
+> Lamonte Smith
 
-</div>
-
----
-
-<div align="center">
-
-**Dual Doctoral Candidate · Walsh College (Troy, MI) · Expected Dec 2027**  
-*DBA — AIML Leadership · PhD in Technology — Cybersecurity · GPA: 4.0*
-
-**Senior Software Design Release Engineer · General Motors**  
-*20+ years spanning Automotive · Telecommunications · Information Technology*
-
-</div>
+A production-hardened, 16-node **Agent-to-Agent (A2A)** multi-agent workflow built in n8n that compares weather and travel logistics across multiple US cities. Designed with security-by-design principles across every layer of the request pipeline.
 
 ---
 
-## About
-
-I work at the intersection of **AI/ML**, **cybersecurity**, **operational technology (OT)**, **autonomous vehicle systems**, and **wireless infrastructure (5G/6G/V2X)** — as a practitioner, a student, and a researcher. By day I'm a Senior Software Design Release Engineer at General Motors. In parallel, I'm pursuing dual doctoral degrees at Walsh College — a DBA in AIML Leadership and a PhD in Technology with a Cybersecurity concentration.
-
-My dissertation focuses on designing a resilience-oriented, cyber-secure machine learning framework for OT in autonomous vehicle systems, using adversarial simulation (FGSM/PGD) across CARLA, ROS, SUMO, and OMNeT++ environments.
-
-I'm continuously learning — building agentic AI systems, RAG pipelines, and multi-agent workflows across several programs simultaneously. This repository is a reflection of that ongoing journey, not a finished product.
+![Travel Weather Comparator — A2A Workflow](comparator-workflow-diagram.png)
 
 ---
 
-## Core Domains
+## Architecture Overview
 
-| Domain | Focus |
-|--------|-------|
-| 🤖 **Agentic AI & Multi-Agent Systems** | n8n A2A workflows, LLM orchestration, tool-use pipelines |
-| 🔐 **AI Cybersecurity & Adversarial ML** | FGSM/PGD attacks, OT threat modeling, security-by-design |
-| 🚗 **Autonomous Vehicle Security** | CPS threat surfaces, V2X, CARLA/ROS simulation environments |
-| 📡 **Wireless & Telecom Infrastructure** | 5G/6G enablement, V2X connectivity, edge AI |
-| 🏭 **IT/OT Convergence** | Industrial control systems, OT network security, resilience engineering |
-| 📊 **RAG & Knowledge Systems** | ChromaDB, Pinecone, BM25 hybrid search, vector pipelines |
+```
+Client Request
+     │
+     ▼
+┌─────────────────────────────────────────────────────┐
+│              SECURITY GATE (3 Layers)                │
+│  Layer 1: API Key (X-Api-Key header)                 │
+│  Layer 2: HMAC-SHA256 Body Signature                 │
+│  Layer 3: CORS Origin Restriction                    │
+└──────────────────────┬──────────────────────────────┘
+                       │
+                       ▼
+            ┌─────────────────────┐
+            │    Rate Limiter     │
+            │  10 req/min sliding │
+            │  window per client  │
+            └──────────┬──────────┘
+                       │
+                       ▼
+            ┌─────────────────────┐
+            │  Input Validator    │
+            │  Whitelist + Regex  │
+            │  Cryptographic IDs  │
+            └──────────┬──────────┘
+                       │
+                       ▼
+            ┌─────────────────────┐
+            │    Split Cities     │
+            │  Fan-out (max 4)    │
+            └──────┬──────┬───────┘
+                   │      │
+          ┌────────┘      └────────┐
+          ▼                        ▼
+  ┌───────────────┐      ┌─────────────────┐
+  │ Weather Agent │      │  Travel Agent   │
+  │  A2A Call     │      │  A2A Call       │
+  │ Bearer Token  │      │  Bearer Token   │
+  └───────┬───────┘      └────────┬────────┘
+          │                       │
+          ▼                       ▼
+  ┌───────────────┐      ┌─────────────────┐
+  │ Merge Weather │      │  Merge Travel   │
+  │   Results     │      │    Results      │
+  └───────┬───────┘      └────────┬────────┘
+          └──────────┬────────────┘
+                     ▼
+          ┌─────────────────────┐
+          │ Aggregate All City  │
+          │       Data          │
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │  Coordinator Pt 1   │
+          │     Scoring         │
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │  Coordinator Pt 2   │
+          │      Ranking        │
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │  Format Response    │
+          └──────────┬──────────┘
+                     ▼
+          ┌─────────────────────┐
+          │  Return to Caller   │
+          └─────────────────────┘
+```
 
 ---
 
-## Featured Projects
+## Security Architecture
 
-### 🧠 [Digital Twin — RAG-Powered AI Chatbot](https://github.com/LSmithPMP/digital-twin)
-> Personal AI digital twin built with GPT-4o, ChromaDB + BM25 hybrid retrieval, and Gradio. Security-by-design architecture with dedicated input validation, output filtering, and rate limiting. Deployed to Hugging Face Spaces.
+This workflow implements a **threat-modeled, hardened security posture** across 12 identified threat vectors:
 
-**Stack:** `Python` `GPT-4o` `ChromaDB` `BM25` `Gradio` `Hugging Face`  
-**Live:** [huggingface.co/spaces/LSmithPMP/digital-twin](https://huggingface.co/spaces/LSmithPMP/digital-twin)
+| Threat | Remediation | Node |
+|--------|------------|------|
+| T-01: Unauthenticated access | 3-layer auth gate (API key + HMAC-SHA256 + CORS) | `Authenticate Request` |
+| T-03: Injection via input fields | Whitelist validation, regex on dates, string sanitization | `Validate and Normalize Input` |
+| T-04: Denial of service / flooding | Sliding-window rate limiter (10 req/60s) | `Rate Limiter` |
+| T-06: Request replay / spoofing | Cryptographic UUID request IDs via `crypto.randomUUID()` | `Validate and Normalize Input` |
+| T-07: Fan-out amplification | Hard cap of 4 cities per request | `Rate Limiter` + `Validate Input` |
+| T-09: Cross-origin abuse | `allowedOrigins` enforced at webhook level | `Travel Query Webhook` |
+| T-12: Timezone / timestamp leakage | All timestamps in UTC, no local timezone exposure | `Validate and Normalize Input` |
+| Side-channel: Timing attacks | `crypto.timingSafeEqual()` for HMAC comparison | `Authenticate Request` |
 
----
-
-### 🌐 [Travel Weather Comparator — Multi-Agent A2A System](https://github.com/LSmithPMP/travel-weather-comparator)
-> 16-node hardened n8n Agent-to-Agent workflow implementing a full multi-agent architecture for travel weather intelligence. Built for the Applied Agentic AI program at Interview Kickstart.
-
-**Stack:** `n8n` `A2A Protocol` `Multi-Agent` `Weather APIs` `JavaScript`
-
----
-
-### 🏦 BankCo Premium Retention Agent
-> AI-powered customer retention system with three parallel implementations — n8n workflow orchestration, React demo interface, and Python backend — demonstrating production-grade agent design patterns.
-
-**Stack:** `n8n` `React` `Python` `LLM Orchestration` `GPT-4o`
-
----
-
-### 🎙️ Voice AI RAG Application
-> End-to-end voice intelligence pipeline: speech-to-text via Whisper, semantic retrieval via Pinecone, LLM response via GPT-4o, and voice synthesis via ElevenLabs — built on a Streamlit interface.
-
-**Stack:** `Python` `Whisper` `Pinecone` `GPT-4o` `ElevenLabs` `Streamlit`
+### Security Headers (enforced on every response)
+```
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Cache-Control: no-store
+X-Request-Id: <cryptographic-uuid>
+```
 
 ---
 
-### 🏥 [Healthcare Multi-Agent System](https://github.com/LSmithPMP/healthcare-multi-agent)
-> Agentic AI system orchestrating three specialist agents across five structured healthcare datasets via n8n. Built for the Applied Agentic AI program at Interview Kickstart.
+## Workflow Nodes (16)
 
-**Stack:** `n8n` `Multi-Agent` `Google Sheets` `GPT-4o` `Python`
+| # | Node | Type | Purpose |
+|---|------|------|---------|
+| 1 | Travel Query Webhook | Webhook (POST) | Entry point — `/travel-weather-compare` |
+| 2 | Authenticate Request | Code | 3-layer auth: API key + HMAC-SHA256 + CORS |
+| 3 | Rate Limiter | Code | Sliding-window rate limiting + fan-out cap |
+| 4 | Validate and Normalize Input | Code | Whitelist, regex, sanitization, crypto IDs |
+| 5 | Split Cities | Code | Fan-out: one item per city |
+| 6 | Weather Agent A2A Call | HTTP Request | A2A task dispatch to Weather Agent |
+| 7 | Travel Agent A2A Call | HTTP Request | A2A task dispatch to Travel Agent |
+| 8 | Merge Weather Results | Merge | Collect parallel weather responses |
+| 9 | Merge Travel Results | Merge | Collect parallel travel responses |
+| 10 | Aggregate All City Data | Code | Combine all agent results per city |
+| 11 | Coordinator Part 1 Scoring | Code | Score each city on weather + travel metrics |
+| 12 | Coordinator Part 2 Ranking | Code | Rank cities, apply budget mode logic |
+| 13 | Format Final Response | Code | Structure output, strip internal fields |
+| 14 | Return Response to Caller | Respond to Webhook | Send secured response |
+| 15 | Error Handler | Code | Centralized error normalization |
+| 16 | Return Error Response | Respond to Webhook | Sanitized error response |
 
 ---
 
-### 🔬 AV/OT Adversarial ML Research Framework *(Dissertation)*
-> Simulation scaffold for dissertation research: adversarial attack modeling (FGSM/PGD) against ML models embedded in autonomous vehicle OT systems, using CARLA, ROS, SUMO, and OMNeT++ environments.
+## Supported Cities & Origins
 
-**Stack:** `Python` `CARLA` `ROS` `SUMO` `OMNeT++` `PyTorch` `Adversarial ML`
+**Destination Cities (whitelist-validated)**
+`Austin` · `Miami` · `Denver` · `Chicago` · `New Orleans` · `San Francisco` · `Nashville`
+
+**Origin Cities**
+`NYC` · `LA` · `Chicago` · `Austin` · `Miami` · `Denver`
+
+---
+
+## A2A Protocol
+
+Agent-to-Agent communication uses a standardized task envelope:
+
+```json
+{
+  "task_id": "TWC-<uuid>-weather-<city>",
+  "sender": "travel-coordinator",
+  "task_type": "weather_forecast",
+  "payload": {
+    "city": "Austin",
+    "days": 7,
+    "units": "imperial"
+  }
+}
+```
+
+Each A2A call includes:
+- `Authorization: Bearer <A2A_AGENT_TOKEN>`
+- `X-A2A-Sender: travel-coordinator`
+- `X-A2A-Task: <task-type>`
+- `X-Request-Id: <propagated-uuid>`
+- 10-second timeout with `allowUnauthorizedCerts: false`
+
+---
+
+## Environment Variables
+
+```bash
+TWC_API_KEY=          # Required: API key for authenticating inbound requests
+TWC_HMAC_SECRET=      # Required: Secret for HMAC-SHA256 body signature verification
+A2A_AGENT_TOKEN=      # Required: Bearer token for outbound A2A agent calls
+WEATHER_AGENT_URL=    # Required: URL of the Weather Agent service
+TRAVEL_AGENT_URL=     # Required: URL of the Travel Agent service
+```
+
+> ⚠️ Never commit actual values. Use n8n environment variable management or a secrets manager.
+
+---
+
+## Sample Request
+
+```bash
+curl -X POST https://<your-n8n-instance>/webhook/travel-weather-compare \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: <your-api-key>" \
+  -H "X-Hmac-Signature: <sha256-hmac-of-body>" \
+  -d '{
+    "cities": ["Austin", "Miami", "Denver"],
+    "origin": "NYC",
+    "travel_date": "2026-06-15",
+    "budget_mode": false
+  }'
+```
 
 ---
 
 ## Tech Stack
 
-### AI / ML
-![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
-![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?style=flat&logo=pytorch&logoColor=white)
-![OpenAI](https://img.shields.io/badge/OpenAI-412991?style=flat&logo=openai&logoColor=white)
-![LangChain](https://img.shields.io/badge/LangChain-1C3C3C?style=flat&logo=langchain&logoColor=white)
-![Hugging Face](https://img.shields.io/badge/HuggingFace-FFD21E?style=flat&logo=huggingface&logoColor=black)
-
-### Agentic & Orchestration
 ![n8n](https://img.shields.io/badge/n8n-EA4B71?style=flat&logo=n8n&logoColor=white)
-![Gradio](https://img.shields.io/badge/Gradio-F97316?style=flat&logo=gradio&logoColor=white)
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat&logo=streamlit&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
+![Node.js Crypto](https://img.shields.io/badge/Node.js_Crypto-339933?style=flat&logo=node.js&logoColor=white)
 
-### Vector & Retrieval
-![ChromaDB](https://img.shields.io/badge/ChromaDB-1B1B2F?style=flat&logoColor=white)
-![Pinecone](https://img.shields.io/badge/Pinecone-000000?style=flat&logo=pinecone&logoColor=white)
-
-### Development
-![Git](https://img.shields.io/badge/Git-F05032?style=flat&logo=git&logoColor=white)
-![VS Code](https://img.shields.io/badge/VSCode-007ACC?style=flat&logo=visualstudiocode&logoColor=white)
-![Jupyter](https://img.shields.io/badge/Jupyter-F37626?style=flat&logo=jupyter&logoColor=white)
-![React](https://img.shields.io/badge/React-20232A?style=flat&logo=react&logoColor=61DAFB)
-
-### Simulation & Research
-![ROS](https://img.shields.io/badge/ROS-22314E?style=flat&logo=ros&logoColor=white)
-![CARLA](https://img.shields.io/badge/CARLA_Simulator-0078D4?style=flat&logoColor=white)
+**Protocols:** A2A (Agent-to-Agent) · REST · HMAC-SHA256  
+**Security:** API Key Auth · HMAC Signatures · CORS · Rate Limiting · Input Sanitization · Timing-Safe Comparison  
+**Patterns:** Fan-out/Fan-in · Coordinator-Worker · Centralized Error Handling
 
 ---
 
-## Credentials & Affiliations
+## Academic Context
 
-| Credential | Issuer |
-|-----------|--------|
-| 🎓 DBA Candidate — AIML Leadership (4.0 GPA) | Walsh College, Troy MI |
-| 🎓 PhD Candidate — Technology / Cybersecurity (4.0 GPA) | Walsh College, Troy MI |
-| 📋 Project Management Professional (PMP) | PMI |
-| ⚡ Agile Certified Practitioner (PMI-ACP) | PMI |
-| ⚙️ Design for Six Sigma Black Belt (DFSS) | — |
-| 🤖 AI Product Manager Nanodegree | Udacity |
-| 🏛️ Teaching Certificate in Higher Education Pedagogy | Harvard Derek Bok Center |
-| 🧪 Applied Agentic AI Program | Interview Kickstart |
-| 🤖 Generative AI Mastermind | Outskill |
+| Field | Detail |
+|-------|--------|
+| Program | Applied Agentic AI |
+| Institution | Interview Kickstart |
+| Semester | Spring 2026 |
+| Assignment | Multi-Agent A2A Workflow Capstone |
 
 ---
 
-## GitHub Stats
+## Repository Structure
 
-<div align="center">
-
-![Lamonte's GitHub Stats](https://github-readme-stats.vercel.app/api?username=LSmithPMP&show_icons=true&theme=github_dark&hide_border=true&count_private=true&include_all_commits=true)
-
-![Top Languages](https://github-readme-stats.vercel.app/api/top-langs/?username=LSmithPMP&layout=compact&theme=github_dark&hide_border=true)
-
-</div>
+```
+travel-weather-comparator/
+├── workflow/
+│   └── Travel_Weather_Comparator_A2A_HARDENED.json   # n8n export
+├── docs/
+│   └── architecture.md                                # Extended design notes
+├── SECURITY.md                                        # Security policy
+└── README.md
+```
 
 ---
 
-## Connect
+## License
 
-<div align="center">
-
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/lamonte-smith-7518b4248/)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black)](https://huggingface.co/LSmithPMP)
-[![Tableau](https://img.shields.io/badge/Tableau-E97627?style=for-the-badge&logo=tableau&logoColor=white)](https://public.tableau.com/app/profile/lamonte.smith/vizzes)
-[![Email](https://img.shields.io/badge/Email-D14836?style=for-the-badge&logo=gmail&logoColor=white)](mailto:lamontesmithpmp@gmail.com)
-
-</div>
+MIT License — see [LICENSE](LICENSE)
 
 ---
 
 <div align="center">
-<sub>Dual Doctoral Candidate · DBA (AIML Leadership) + PhD (Cybersecurity) · Walsh College · Expected December 2027</sub>
+<sub>Built by <a href="https://github.com/LSmithPMP">Lamonte Smith</a> · Applied Agentic AI · Interview Kickstart</sub>
 </div>

@@ -52,10 +52,10 @@ I'm continuously learning — building agentic AI systems, RAG pipelines, and mu
 
 ---
 
-### 🌐 Travel Weather Comparator — Multi-Agent A2A System
-> 16-node n8n Agent-to-Agent workflow implementing a full multi-agent architecture for travel weather intelligence. Capstone project for AI Agentic Systems coursework at Walsh College.
+### 🌐 [Travel Weather Comparator — Multi-Agent A2A System](https://github.com/LSmithPMP/travel-weather-comparator)
+> 16-node hardened n8n Agent-to-Agent workflow implementing a full multi-agent architecture for travel weather intelligence. Built for the Applied Agentic AI program at Interview Kickstart.
 
-**Stack:** `n8n` `A2A Protocol` `Multi-Agent` `Weather APIs` `Python`
+**Stack:** `n8n` `A2A Protocol` `Multi-Agent` `Weather APIs` `JavaScript`
 
 ---
 
@@ -73,8 +73,8 @@ I'm continuously learning — building agentic AI systems, RAG pipelines, and mu
 
 ---
 
-### 🏥 Healthcare Multi-Agent System
-> Agentic AI system orchestrating across five structured healthcare datasets via n8n, demonstrating multi-source agent coordination for clinical decision-support workflows.
+### 🏥 [Healthcare Multi-Agent System](https://github.com/LSmithPMP/healthcare-multi-agent)
+> Agentic AI system orchestrating three specialist agents across five structured healthcare datasets via n8n. Built for the Applied Agentic AI program at Interview Kickstart.
 
 **Stack:** `n8n` `Multi-Agent` `Google Sheets` `GPT-4o` `Python`
 
